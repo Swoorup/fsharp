@@ -2,18 +2,13 @@
 
 namespace Microsoft.FSharp.Core
 
-open System
+type PrintfFormat<'Printer,'State,'Residue,'Result>(value:string) =
+        member x.Value = value
 
-type PrintfFormat<'Printer,'State,'Residue,'Result>(value: string, captures: obj[], types: Type[]) =
-    new(value) = new PrintfFormat<'Printer,'State,'Residue,'Result>(value, null, null)
-    member __.Value = value
-    member __.Captures = captures
-    member __.Types = types
-    override __.ToString() = value
-
-type PrintfFormat<'Printer,'State,'Residue,'Result,'Tuple>(value: string, captures: obj[], types: Type[]) = 
-    inherit PrintfFormat<'Printer,'State,'Residue,'Result>(value, captures, types)
-    new(value) = new PrintfFormat<'Printer,'State,'Residue,'Result, 'Tuple>(value, null, null)
+        override __.ToString() = value
+    
+type PrintfFormat<'Printer,'State,'Residue,'Result,'Tuple>(value:string) = 
+    inherit PrintfFormat<'Printer,'State,'Residue,'Result>(value)
 
 type Format<'Printer,'State,'Residue,'Result> = PrintfFormat<'Printer,'State,'Residue,'Result>
 type Format<'Printer,'State,'Residue,'Result,'Tuple> = PrintfFormat<'Printer,'State,'Residue,'Result,'Tuple>
@@ -22,13 +17,13 @@ module internal PrintfImpl =
 
     /// Basic idea of implementation:
     /// Every Printf.* family should returns curried function that collects arguments and then somehow prints them.
-    /// Idea - instead of building functions on the fly argument by argument we instead introduce some predefined parts and then construct functions from these parts
+    /// Idea - instead of building functions on fly argument by argument we instead introduce some predefined parts and then construct functions from these parts
     /// Parts include:
     /// Plain ones:
     /// 1. Final pieces (1..5) - set of functions with arguments number 1..5. 
     /// Primary characteristic - these functions produce final result of the *printf* operation
     /// 2. Chained pieces (1..5) - set of functions with arguments number 1..5. 
-    /// Primary characteristic - these functions do not produce final result by itself, instead they are tailed with another piece (chained or final).
+    /// Primary characteristic - these functions doesn not produce final result by itself, instead they tailed with some another piece (chained or final).
     /// Plain parts correspond to simple format specifiers (that are projected to just one parameter of the function, say %d or %s). However we also have 
     /// format specifiers that can be projected to more than one argument (i.e %a, %t or any simple format specified with * width or precision). 
     /// For them we add special cases (both chained and final to denote that they can either return value themselves or continue with some other piece)
@@ -41,10 +36,6 @@ module internal PrintfImpl =
     /// with just one reflection call
     /// 2. we can make combinable parts independent from particular printf implementation. Thus final result can be cached and shared. 
     /// i.e when first call to printf "%s %s" will trigger creation of the specialization. Subsequent calls will pick existing specialization
-    /// Note, immediate specifiers will interrupt the aggregation of arguments. For example:
-    /// - function that corresponds to %s%s%{123}%s%s%s (string -> string -> string -> string -> string -> T) will have to be broken as:
-    ///   chained2 -> finalCapture4
-    /// The captures should always appear at the beginning of a chained group.
     open System
     open System.IO
     open System.Text
@@ -87,24 +78,21 @@ module internal PrintfImpl =
             Precision: int
             Width: int
             Flags: FormatFlags
-            Capture: int option
         }
         member this.IsStarPrecision = this.Precision = StarValue
         member this.IsPrecisionSpecified = this.Precision <> NotSpecifiedValue
         member this.IsStarWidth = this.Width = StarValue
         member this.IsWidthSpecified = this.Width <> NotSpecifiedValue
-        member this.HasCapture = this.Capture.IsSome
 
         override this.ToString() = 
             let valueOf n = match n with StarValue -> "*" | NotSpecifiedValue -> "-" | n -> n.ToString()
             System.String.Format
                 (
-                    "'{0}', Precision={1}, Width={2}, Flags={3}, Captures={4}", 
+                    "'{0}', Precision={1}, Width={2}, Flags={3}", 
                     this.TypeChar, 
                     (valueOf this.Precision),
                     (valueOf this.Width), 
-                    this.Flags,
-                    this.Capture
+                    this.Flags
                 )
     
     /// Set of helpers to parse format string
@@ -143,36 +131,8 @@ module internal PrintfImpl =
         let parseTypeChar (s: string) i = 
             s.[i], (i + 1)
 
-        let rec parseFormatSpecifier (s:string) (i:int) =
-
-            // when called recursively for %{nn:FFF} i could point to ':'
-            System.Diagnostics.Debug.Assert(s.[i] = '%' || s.[i] = ':', "s.[i] = '%' || s.[i] = ':'")
-
-            let isImm, i = if s.[i+1] = '{' 
-                           then true, i+1
-                           else false, i
-
-            if isImm then
-                let rbrace = s.IndexOf('}', i)
-                if rbrace < 0 then raise (ArgumentException("invalid immediate specifier"))
-                let colon  = s.IndexOf(':', i)
-                if colon < 0 || colon > rbrace 
-                then 
-                    // defaults to %A
-                    let cap, i = intFromString s i
-                    { TypeChar = 'A'; Precision = NotSpecifiedValue; Flags = FormatFlags.None; Width = NotSpecifiedValue; Capture = Some cap }, i
-                else
-                    let spec, i = parseFormatSpecifier s i
-                    System.Diagnostics.Debug.Assert((i = colon), "i = colon")
-                    let cap, i = intFromString s (i + 1)
-                    { spec with Capture = Some cap }, i
-            else
-                let flags, i     = parseFlags s (i + 1)
-                let width, i     = parseWidth s i
-                let precision, i = parsePrecision s i
-                let typeChar, i  = parseTypeChar s i
-                { TypeChar = typeChar; Precision = precision; Flags = flags; Width = width; Capture = None }, i
-
+        let skipInterpHole isInterp (s:string) i =
+            if isInterp && i+2 < s.Length && s.[i] = '%' && s.[i+1] = 'P'  then i+2 else i
     
         let findNextFormatSpecifier (s: string) i = 
             let rec go i (buf: Text.StringBuilder) =
@@ -182,13 +142,16 @@ module internal PrintfImpl =
                     let c = s.[i]
                     if c = '%' then
                         if i + 1 < s.Length then
-                            if s.[i+1] = '{' 
-                            then i, buf.ToString()
-                            else
+                            //System.Console.WriteLine("findNextFormatSpecifier: i = {0}, s.[i] = {1} parseFlags", i, s.[i])
                             let _, i1 = parseFlags s (i + 1)
+                            //System.Console.WriteLine("findNextFormatSpecifier: i1 = {0}, s.[i1] = {1} parseWidth", i1, s.[i1])
                             let w, i2 = parseWidth s i1
+                            //System.Console.WriteLine("findNextFormatSpecifier: i2 = {0}, s.[i2] = {1} parsePrecision", i2, s.[i2])
                             let p, i3 = parsePrecision s i2
+                            //System.Console.WriteLine("findNextFormatSpecifier: i3 = {0}, s.[i3] = {1} parsePrecision", i3, s.[i3])
                             let typeChar, i4 = parseTypeChar s i3
+                            //System.Console.WriteLine("findNextFormatSpecifier: i4 = {0}, s.[i4] = {1}, typeChar = {2}", i4, s.[i4], typeChar)
+
                             // shortcut for the simpliest case
                             // if typeChar is not % or it has star as width\precision - resort to long path
                             if typeChar = '%' && not (w = StarValue || p = StarValue) then 
@@ -207,9 +170,7 @@ module internal PrintfImpl =
     [<AbstractClass>]
     type PrintfEnv<'State, 'Residue, 'Result> =
         val State: 'State
-        val Captures: obj[]
-        new(s: 'State) = { State = s; Captures = Unchecked.defaultof<_> }
-        new(s: 'State, caps: obj[]) = { State = s; Captures = caps }
+        new(s: 'State) = { State = s }
         abstract Finish: unit -> 'Result
         abstract Write: string -> unit
         abstract WriteT: 'Residue -> unit
@@ -257,473 +218,13 @@ module internal PrintfImpl =
     [<Literal>]
     let MaxArgumentsInSpecialization = 5
 
-    /// Specializations are created via factory methods. These methods accepts 3 kinds of arguments
+    /// Specializations are created via factory methods. These methods accepts 2 kinds of arguments
     /// - parts of format string that corresponds to raw text
     /// - functions that can transform collected values to strings
-    /// - captured immediate indices
     /// basic shape of the signature of specialization
     /// <prefix-string> + <converter for arg1> + <suffix that comes after arg1> + ... <converter for arg-N> + <suffix that comes after arg-N>
     type Specializations<'State, 'Residue, 'Result> private ()=
-
-        static member FinalCapture1<'A>
-            (
-                s0, cap, conv1, s1 
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun () ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastEndCapture1<'A>
-            (
-                s0, cap, conv1
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun () ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]))
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastStartCapture1<'A>
-            (
-                cap, conv1, s1
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun () ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastCapture1<'A>
-            (
-                cap, conv1
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun () ->
-                    let env = env()
-                    env.Write (conv1 env.Captures.[cap])
-                    env.Finish()
-                )
-            )
-
-        static member FinalCapture2<'A, 'B>
-            (
-                s0, cap, conv1, s1, conv2, s2
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastEndCapture2<'A, 'B>
-            (
-                s0, cap, conv1, s1, conv2
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b))
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastStartCapture2<'A, 'B>
-            (
-                cap, conv1, s1, conv2, s2
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastCapture2<'A, 'B>
-            (
-                cap, conv1, s1, conv2
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b))
-                    env.Finish()
-                )
-            )
-
-        static member FinalCapture3<'A, 'B, 'C>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastEndCapture3<'A, 'B, 'C>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c))
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastStartCapture3<'A, 'B, 'C>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastCapture3<'A, 'B, 'C>
-            (
-                cap, conv1, s1, conv2, s2, conv3
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c))
-                    env.Finish()
-                )
-            )
-
-        static member FinalCapture4<'A, 'B, 'C, 'D>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D)->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastEndCapture4<'A, 'B, 'C, 'D>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3, conv4
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d))
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastStartCapture4<'A, 'B, 'C, 'D>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastCapture4<'A, 'B, 'C, 'D>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3, conv4
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d))
-                    env.Finish()
-                )
-            )
-
-        static member FinalCapture5<'A, 'B, 'C, 'D, 'E>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4, conv5, s5
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) (e: 'E) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4, (conv5 e), s5)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastEndCapture5<'A, 'B, 'C, 'D, 'E>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4, conv5
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) (e: 'E) ->
-                    let env = env()
-                    Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4, (conv5 e))
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastStartCapture5<'A, 'B, 'C, 'D, 'E>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4, conv5, s5
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) (e: 'E) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4, (conv5 e), s5)
-                    env.Finish()
-                )
-            )
-
-        static member FinalFastCapture5<'A, 'B, 'C, 'D, 'E>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4, conv5
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) (e: 'E) ->
-                    let env = env()
-                    Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4, (conv5 e))
-                    env.Finish()
-                )
-            )
-
-        static member ChainedCapture1<'A, 'Tail>
-            (
-                s0, cap, conv1,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun () ->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, s0, (conv1 env.Captures.[cap]))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-         static member ChainedFastStartCapture1<'A, 'Tail>
-            (
-                cap, conv1,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun () ->
-                    let env() = 
-                        let env = env()
-                        env.Write(conv1 env.Captures.[cap])
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedCapture2<'A, 'B, 'Tail>
-            (
-                s0, cap, conv1, s1, conv2,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) ->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-         static member ChainedFastStartCapture2<'A, 'B, 'Tail>
-            (
-                cap, conv1, s1, conv2,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) ->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, conv1 env.Captures.[cap], s1, (conv2 b))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedCapture3<'A, 'B, 'C, 'Tail>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) ->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedFastStartCapture3<'A, 'B, 'C, 'Tail>
-            (
-                cap, conv1, s1, conv2, s2, conv3,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) ->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedCapture4<'A, 'B, 'C, 'D, 'Tail>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3, conv4,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D)->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedFastStartCapture4<'A, 'B, 'C, 'D, 'Tail>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3, conv4,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D)->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedCapture5<'A, 'B, 'C, 'D, 'E, 'Tail>
-            (
-                s0, cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4, conv5,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) (e: 'E)->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, s0, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4, (conv5 e))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member ChainedFastStartCapture5<'A, 'B, 'C, 'D, 'E, 'Tail>
-            (
-                cap, conv1, s1, conv2, s2, conv3, s3, conv4, s4, conv5,
-                next
-            ) =
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (b: 'B) (c: 'C) (d: 'D) (e: 'E)->
-                    let env() = 
-                        let env = env()
-                        Utils.Write(env, (conv1 env.Captures.[cap]), s1, (conv2 b), s2, (conv3 c), s3, (conv4 d), s4, (conv5 e))
-                        env
-                    next env : 'Tail
-                )
-            )
-
-        static member LittleAFinalCapture<'A>(s1: string, cap, s2: string) = 
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (f: 'State -> 'A ->'Residue) -> 
-                    let env = env()
-                    env.Write s1
-                    env.WriteT(f env.State (env.Captures.[cap] :?> 'A))
-                    env.Write s2
-                    env.Finish()
-                )
-            )
-
-        static member LittleAChainedCapture<'A, 'Tail>(s1: string, cap, next: PrintfFactory<'State, 'Residue, 'Result,'Tail>) = 
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (f: 'State -> 'A ->'Residue) -> 
-                    let env() = 
-                        let env = env()
-                        env.Write s1
-                        env.WriteT(f env.State (env.Captures.[cap] :?> 'A))
-                        env
-                    next env: 'Tail
-                )
-            )
-
-        static member StarFinalCapture1<'A>(s1: string, cap, conv, s2: string) = 
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (star1: int) -> 
-                    let env = env()
-                    env.Write s1
-                    env.Write (conv (env.Captures.[cap] :?> 'A) star1: string)
-                    env.Write s2
-                    env.Finish()
-                )
-            )   
-       
-        static member StarFinalCapture2<'A>(s1: string, cap, conv, s2: string) = 
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (star1: int) (star2: int) -> 
-                    let env = env()
-                    env.Write s1
-                    env.Write (conv (env.Captures.[cap] :?> 'A) star1 star2: string)
-                    env.Write s2
-                    env.Finish()
-                )
-            )
-
-        static member StarChainedCapture1<'A, 'Tail>(s1: string, cap, conv, next: PrintfFactory<'State, 'Residue, 'Result,'Tail>) = 
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (star1: int) -> 
-                    let env() =
-                        let env = env()
-                        env.Write s1
-                        env.Write(conv (env.Captures.[cap] :?> 'A) star1 : string)
-                        env
-                    next env : 'Tail
-                )
-            )
-        
-        static member StarChainedCapture2<'A, 'Tail>(s1: string, cap, conv, next: PrintfFactory<'State, 'Residue, 'Result,'Tail>) = 
-            (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
-                (fun (star1: int) (star2: int) -> 
-                    let env() =
-                        let env = env()
-                        env.Write s1
-                        env.Write(conv (env.Captures.[cap] :?> 'A) star1 star2 : string)
-                        env
-                    next env : 'Tail
-                )
-            )
-        
+     
         static member Final1<'A>
             (
                 s0, conv1, s1
@@ -1124,7 +625,6 @@ module internal PrintfImpl =
                     env.Finish()
                 )
             )
-
         static member TChained<'Tail>(s1: string, next: PrintfFactory<'State, 'Residue, 'Result,'Tail>) = 
             (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
                 (fun (f: 'State -> 'Residue) -> 
@@ -1147,7 +647,6 @@ module internal PrintfImpl =
                     env.Finish()
                 )
             )
-
         static member LittleAChained<'A, 'Tail>(s1: string, next: PrintfFactory<'State, 'Residue, 'Result,'Tail>) = 
             (fun (env: unit -> PrintfEnv<'State, 'Residue, 'Result>) ->
                 (fun (f: 'State -> 'A ->'Residue) (a: 'A) -> 
@@ -1567,6 +1066,9 @@ module internal PrintfImpl =
         static member ObjectToString<'T>(spec: FormatSpecifier) = 
             basicWithPadding spec (fun (v: 'T) -> match box v with null -> "<null>" | x -> x.ToString())
         
+        static member ObjectToStringNullEmpty<'T>(spec: FormatSpecifier) = 
+            basicWithPadding spec (fun (v: 'T) -> match box v with null -> "" | x -> x.ToString())
+        
         static member GenericToStringCore(v: 'T, opts: Microsoft.FSharp.Text.StructuredPrintfImpl.FormatOptions, bindingFlags) = 
             // printfn %0A is considered to mean 'print width zero'
             match box v with
@@ -1677,11 +1179,15 @@ module internal PrintfImpl =
             let mi = typeof<ObjectPrinter>.GetMethod("ObjectToString", NonPublicStatics)
             let mi = mi.MakeGenericMethod ty
             mi.Invoke(null, [| box spec |])
+        | 'P' -> 
+            let mi = typeof<ObjectPrinter>.GetMethod("ObjectToStringNullEmpty", NonPublicStatics)
+            let mi = mi.MakeGenericMethod ty
+            mi.Invoke(null, [| box spec |])
         | _ -> 
             raise (ArgumentException(SR.GetString(SR.printfBadFormatSpecifier)))
     
     let extractCurriedArguments (ty: Type) n = 
-        System.Diagnostics.Debug.Assert(n = 0 || n = 1 || n = 2 || n = 3, "n = 0 || n = 1 || n = 2 || n = 3")
+        System.Diagnostics.Debug.Assert(n = 1 || n = 2 || n = 3, "n = 1 || n = 2 || n = 3")
         let buf = Array.zeroCreate (n + 1)
         let rec go (ty: Type) i = 
             if i < n then
@@ -1758,7 +1264,6 @@ module internal PrintfImpl =
     //  or grab the content of stack, build intermediate printer and push it back to stack (so it can later be consumed by as argument) 
     type private PrintfBuilder<'S, 'Re, 'Res>() =
     
-        let builderStack = PrintfBuilderStack()
         let mutable count = 0
         let mutable optimizedArgCount = 0
 #if DEBUG
@@ -1887,6 +1392,10 @@ module internal PrintfImpl =
             let mi = mi.MakeGenericMethod argTypes
             mi.Invoke(null, args)
 
+        let builderStack = PrintfBuilderStack()
+
+        let ContinuationOnStack = -1
+
         let buildPlain numberOfArgs prefix = 
             let n = numberOfArgs * 2
             let hasCont = builderStack.HasContinuationOnStack numberOfArgs
@@ -1906,182 +1415,28 @@ module internal PrintfImpl =
             else
                 buildPlainFinal(plainArgs, plainTypes)
 
-        let buildCaptureSpecialChained(spec: FormatSpecifier, cTy: Type, prefix: string, tail: obj, retTy) = 
-            let capture = box spec.Capture.Value
-            if spec.TypeChar = 'a' then
-                let mi = typeof<Specializations<'S, 'Re, 'Res>>.GetMethod("LittleAChainedCapture", NonPublicStatics)
-#if DEBUG
-                verifyMethodInfoWasTaken mi
-#endif
-
-                let mi = mi.MakeGenericMethod([| cTy; retTy |])
-                let args = [| box prefix; capture; tail   |]
-                mi.Invoke(null, args)
-            elif spec.TypeChar = 't' then raise (ArgumentException("format specifier '%t' may not be used with immediate captures"))
-            else
-                System.Diagnostics.Debug.Assert(spec.IsStarPrecision || spec.IsStarWidth, "spec.IsStarPrecision || spec.IsStarWidth ")
-                System.Diagnostics.Debug.Assert(spec.TypeChar <> '%', "spec.TypeChar <> '%'")
-
-                let mi = 
-                    let n = if spec.IsStarWidth = spec.IsStarPrecision then 2 else 1
-                    let name = "StarChainedCapture" + (string n)
-                    typeof<Specializations<'S, 'Re, 'Res>>.GetMethod(name, NonPublicStatics)
-#if DEBUG                
-                verifyMethodInfoWasTaken mi
-#endif                
-                let conv = getValueConverter cTy spec 
-                let args = [| box prefix; capture; box conv; tail |]
-                let mi = mi.MakeGenericMethod([| cTy; retTy |])
-                mi.Invoke(null, args)
+        let rec parseFromFormatSpecifier isInterp (prefix: string) (s: string) (funcTy: Type) i: int = 
             
-        let buildCaptureSpecialFinal(spec: FormatSpecifier, cTy: Type, prefix: string, suffix: string) =
-            let capture = box spec.Capture.Value
-            if spec.TypeChar = 'a' then
-                let mi = typeof<Specializations<'S, 'Re, 'Res>>.GetMethod("LittleAFinalCapture", NonPublicStatics)
-#if DEBUG
-                verifyMethodInfoWasTaken mi
-#endif
-                let mi = mi.MakeGenericMethod(cTy)
-                let args = [| box prefix; capture; box suffix |]
-                mi.Invoke(null, args)
-            elif spec.TypeChar = 't' then raise (ArgumentException("format specifier '%t' may not be used with immediate captures"))
-            else
-                System.Diagnostics.Debug.Assert(spec.IsStarPrecision || spec.IsStarWidth, "spec.IsStarPrecision || spec.IsStarWidth ")
-                System.Diagnostics.Debug.Assert(spec.TypeChar <> '%', "spec.TypeChar <> '%'")
-
-                let mi = 
-                    let n = if spec.IsStarWidth = spec.IsStarPrecision then 2 else 1
-                    let name = "StarFinalCapture" + (string n)
-                    typeof<Specializations<'S, 'Re, 'Res>>.GetMethod(name, NonPublicStatics)
-#if DEBUG
-                verifyMethodInfoWasTaken mi
-#endif
-
-                let conv = getValueConverter cTy spec 
-                let args = [| box prefix; capture; box conv; box suffix |]
-                let mi = mi.MakeGenericMethod(cTy)
-                mi.Invoke(null, args)
-
-        let buildCaptureFinal(spec, prefix, suffix, cTy, pendingArgs: obj[], pendingTypes: Type[]) =
-            let capture = box(spec.Capture.Value)
-            let conv = getValueConverter cTy spec
-            let argsCount = pendingArgs.Length
-            let suffix' = if argsCount > 0 then pendingArgs.[argsCount - 1].ToString() else suffix
-
-            let methodName, (args: obj seq) =
-                match prefix, suffix' with
-                | "", "" ->
-                    optimizedArgCount <- optimizedArgCount + 2
-                    "FinalFastCapture", seq {
-                        yield capture 
-                        yield conv 
-                        if argsCount > 0 then
-                            yield box suffix
-                            yield! Seq.take (argsCount-1) pendingArgs
-                    }
-                | "", _ ->
-                    optimizedArgCount <- optimizedArgCount + 1
-                    "FinalFastStartCapture", seq {
-                        yield capture
-                        yield conv
-                        yield box suffix
-                        yield! pendingArgs
-                    }
-                | _, "" ->
-                    optimizedArgCount <- optimizedArgCount + 1
-                    "FinalFastEndCapture", seq {
-                        yield prefix
-                        yield capture
-                        yield conv
-                        if argsCount > 0 then
-                            yield box suffix
-                            yield! Seq.take (argsCount-1) pendingArgs
-                    }
-                | _, _ ->
-                    "FinalCapture", seq {
-                        yield prefix
-                        yield capture
-                        yield conv
-                        yield suffix
-                        yield! pendingArgs
-                    }
-
-            let mi = typeof<Specializations<'S, 'Re, 'Res>>.GetMethod(methodName + (pendingTypes.Length + 1).ToString(), NonPublicStatics)
-#if DEBUG
-            verifyMethodInfoWasTaken mi
-#endif
-            let mi = mi.MakeGenericMethod(Array.append [| cTy |] pendingTypes)
-            mi.Invoke(null, Array.ofSeq args)
-
-        let buildCaptureChained(spec, prefix, cTy, tail, retTy, pendingArgs, pendingTypes: Type[]) =
-            let capture = box(spec.Capture.Value)
-            let conv = getValueConverter cTy spec
-            let methodName,args =
-                if prefix = "" then
-                    optimizedArgCount <- optimizedArgCount + 1
-                    "ChainedFastStartCapture", seq { 
-                        yield capture
-                        yield conv
-                        yield! pendingArgs
-                        yield tail
-                    }
-                else
-                    "ChainedCapture", seq { 
-                        yield prefix
-                        yield capture
-                        yield conv
-                        yield! pendingArgs
-                        yield tail
-                    } 
-
-            let mi = typeof<Specializations<'S, 'Re, 'Res>>.GetMethod(methodName + (pendingTypes.Length + 1).ToString(), NonPublicStatics)
-#if DEBUG
-            verifyMethodInfoWasTaken mi
-#endif
-            let mi = mi.MakeGenericMethod(Array.ofSeq <| seq { 
-                yield cTy
-                yield! pendingTypes
-                yield retTy
-            })
-            mi.Invoke(null, Array.ofSeq args)
-
-        let buildCapture(spec, prefix, suffix, cTy, numberOfArgs) = 
-            let n = numberOfArgs * 2
-            let hasCont = builderStack.HasContinuationOnStack numberOfArgs
-            let plainArgs, plainTypes = 
-                builderStack.GetArgumentAndTypesAsArrays(n, 0, n, numberOfArgs, 0, numberOfArgs)
-
-            if hasCont then
-                let cont, contTy = builderStack.PopContinuationWithType()
-
-                buildCaptureChained(spec, prefix, cTy, cont, contTy, plainArgs, plainTypes)
-            else
-                buildCaptureFinal(spec, prefix, suffix, cTy, plainArgs, plainTypes)
-
-        /// <summary>
-        /// A sentinel value for parseFromFormatSpecifier return value,
-        /// indicating that a continuation is at the stack top.
-        /// </summary>
-        [<Literal>]
-        let ContinuationOnStack = -1
-        /// <summary>
-        /// A sentinel value for parseFromFormatSpecifier return value,
-        /// indicating that the format string completes scanning and
-        /// no more specifiers are found.
-        /// </summary>
-        [<Literal>]
-        let EndOfString = 0
-
-        /// <return> The number of pending arguments on the builder stack </return>
-        let rec parseFromFormatSpecifier (prefix: string) (s: string) (funcTy: Type) (i: int) (cTy: Type[]) = 
+            if i >= s.Length then 0 else
             
-            if i >= s.Length then EndOfString
-            else
-            
+            System.Diagnostics.Debug.Assert(s.[i] = '%', "s.[i] = '%'")
             count <- count + 1
 
-            let spec, i = FormatString.parseFormatSpecifier s i
-            let isImm, _ = spec.Capture.IsSome, Option.defaultValue -1 spec.Capture
+            //System.Console.WriteLine("i = {0}, s.[i] = {1} parseFlags", i, s.[i])
+            let flags, i = FormatString.parseFlags s (i + 1)
+            //System.Console.WriteLine("i = {0}, s.[i] = {1} parseWidth", i, s.[i])
+            let width, i = FormatString.parseWidth s i
+            //System.Console.WriteLine("i = {0}, s.[i] = {1} parsePrecision", i, s.[i])
+            let precision, i = FormatString.parsePrecision s i
+            //System.Console.WriteLine("i = {0}, s.[i] = {1} parseTypeChar", i, s.[i])
+            let typeChar, i = FormatString.parseTypeChar s i
+            // Skip %P insertion points added after %d in interpolated strings
+            //System.Console.WriteLine("i = {0}, s.[i] = {1} skipInterpHole", i, s.[i])
+            let i = FormatString.skipInterpHole isInterp s i
+            //System.Console.WriteLine("i = {0}, s.[i] = {1} done", i, s.[i])
+
+            let spec = { TypeChar = typeChar; Precision = precision; Flags = flags; Width = width}
+            
             let next, suffix = FormatString.findNextFormatSpecifier s i
 
             let argTys = 
@@ -2092,37 +1447,29 @@ module internal PrintfImpl =
                         else 2
                     else 1
 
-                // immediate spec doesn't get payload from arg
-                let n = if isImm then n - 1 else n
+                let n = if spec.TypeChar = '%' then n - 1 else n
+                
+                System.Diagnostics.Debug.Assert(n <> 0, "n <> 0")
 
-                System.Diagnostics.Debug.Assert(n >= 0, "n >= 0")
                 extractCurriedArguments funcTy n
 
-            // curry on
             let retTy = argTys.[argTys.Length - 1]
 
-            let numberOfArgs = parseFromFormatSpecifier suffix s retTy next cTy
-            if spec.TypeChar = 'a' || spec.TypeChar = 't' || spec.IsStarWidth || spec.IsStarPrecision then
-                let cTy =
-                    if spec.HasCapture then Some cTy.[spec.Capture.Value]
-                    else None
+            let numberOfArgs = parseFromFormatSpecifier isInterp suffix s retTy next
 
+            if spec.TypeChar = 'a' || spec.TypeChar = 't' || spec.IsStarWidth || spec.IsStarPrecision then
                 if numberOfArgs = ContinuationOnStack then
 
                     let cont, contTy = builderStack.PopContinuationWithType()
-                    let currentCont = 
-                        if spec.HasCapture then buildCaptureSpecialChained(spec, cTy.Value, prefix, cont, contTy)
-                        else buildSpecialChained(spec, argTys, prefix, cont, contTy)
+                    let currentCont = buildSpecialChained(spec, argTys, prefix, cont, contTy)
                     builderStack.PushContinuationWithType(currentCont, funcTy)
 
                     ContinuationOnStack
                 else
-                    if numberOfArgs = EndOfString then
+                    if numberOfArgs = 0 then
                         System.Diagnostics.Debug.Assert(builderStack.IsEmpty, "builderStack.IsEmpty")
 
-                        let currentCont =
-                            if spec.HasCapture then buildCaptureSpecialFinal(spec, cTy.Value, prefix, suffix)
-                            else buildSpecialFinal(spec, argTys, prefix, suffix)
+                        let currentCont = buildSpecialFinal(spec, argTys, prefix, suffix)
                         builderStack.PushContinuationWithType(currentCont, funcTy)
                         ContinuationOnStack
                     else
@@ -2147,33 +1494,10 @@ module internal PrintfImpl =
                             else
                                 buildPlainFinal(plainArgs, plainTypes)
                             
-                        let next =
-                            if spec.HasCapture then buildCaptureSpecialChained(spec, cTy.Value, prefix, next, retTy)
-                            else buildSpecialChained(spec, argTys, prefix, next, retTy)
+                        let next = buildSpecialChained(spec, argTys, prefix, next, retTy)
                         builderStack.PushContinuationWithType(next, funcTy)
 
                         ContinuationOnStack
-
-            elif spec.HasCapture then
-                let capture = spec.Capture.Value
-                if numberOfArgs = ContinuationOnStack then
-                    // no pending args between capture and cont
-                    let cont, contTy = builderStack.PopContinuationWithType()
-                    let currentCont = buildCaptureChained(spec, prefix, cTy.[capture], cont, contTy, [||], [||])
-                    builderStack.PushContinuationWithType(currentCont, funcTy)
-
-                elif numberOfArgs = EndOfString then
-                    // a "final" starting with a "capture" must not have pending args
-                    System.Diagnostics.Debug.Assert(builderStack.IsEmpty, "builderStack.IsEmpty")
-                    let currentCont = buildCaptureFinal(spec, prefix, suffix, cTy.[capture], [||], [||])
-                    builderStack.PushContinuationWithType(currentCont, funcTy)
-                else
-                    //build a "capture-starting" continuation with the pending params
-                    let cont = buildCapture(spec, prefix, suffix, cTy.[capture], numberOfArgs)
-                    builderStack.PushContinuationWithType(cont, funcTy)
-
-                ContinuationOnStack
-
             else
                 if numberOfArgs = ContinuationOnStack then
                     let idx = argTys.Length - 2
@@ -2191,7 +1515,7 @@ module internal PrintfImpl =
                     else 
                         numberOfArgs + 1
 
-        let parseFormatString (s: string) (funcTy: System.Type) (cTy: System.Type[]) : obj = 
+        let parseFormatString isInterp (s: string) (funcTy: System.Type) : obj = 
             optimizedArgCount <- 0
             let prefixPos, prefix = FormatString.findNextFormatSpecifier s 0
             if prefixPos = s.Length then 
@@ -2201,15 +1525,15 @@ module internal PrintfImpl =
                     env.Finish()
                     )
             else
-                let n = parseFromFormatSpecifier prefix s funcTy prefixPos cTy
+                let n = parseFromFormatSpecifier isInterp prefix s funcTy prefixPos
                 
                 if n = ContinuationOnStack || n = 0 then
                     builderStack.PopValueUnsafe()
                 else
                     buildPlain n prefix
 
-        member __.Build<'T>(s: string, cTy: Type[]) : PrintfFactory<'S, 'Re, 'Res, 'T> * int = 
-            parseFormatString s (typeof<'T>) cTy :?> _, (2 * count + 1) - optimizedArgCount // second component is used in SprintfEnv as value for internal buffer
+        member __.Build<'T>(s: string, isInterp: bool) : PrintfFactory<'S, 'Re, 'Res, 'T> * int = 
+            parseFormatString isInterp s typeof<'T> :?> _, (2 * count + 1) - optimizedArgCount // second component is used in SprintfEnv as value for internal buffer
 
     /// Type of element that is stored in cache 
     /// Pair: factory for the printer + number of text blocks that printer will produce (used to preallocate buffers)
@@ -2220,26 +1544,28 @@ module internal PrintfImpl =
     /// printf is called in tight loop
     /// 2nd level is global dictionary that maps format string to the corresponding PrintfFactory
     type Cache<'T, 'State, 'Residue, 'Result>() =
-        static let generate(fmt, capTypes) = PrintfBuilder<'State, 'Residue, 'Result>().Build<'T>(fmt, capTypes)
-        static let mutable map = System.Collections.Concurrent.ConcurrentDictionary<string*Type[], CachedItem<'T, 'State, 'Residue, 'Result>>()
+        static let generate fmt = PrintfBuilder<'State, 'Residue, 'Result>().Build<'T>(fmt, false)
+        static let mutable map = System.Collections.Concurrent.ConcurrentDictionary<string, CachedItem<'T, 'State, 'Residue, 'Result>>()
         static let getOrAddFunc = Func<_, _>(generate)
-        static let get(key: string*Type[]) = map.GetOrAdd(key, getOrAddFunc)
+        static let get (key: string) = map.GetOrAdd(key, getOrAddFunc)
 
         [<DefaultValue>]
         [<ThreadStatic>]
         static val mutable private last: string * CachedItem<'T, 'State, 'Residue, 'Result>
     
-        static member Get(key: Format<'T, 'State, 'Residue, 'Result>) =
-            if not (Cache<'T, 'State, 'Residue, 'Result>.last === null) 
-                && key.Value.Equals (fst Cache<'T, 'State, 'Residue, 'Result>.last) then
-                    snd Cache<'T, 'State, 'Residue, 'Result>.last
+        static member Get(key: Format<'T, 'State, 'Residue, 'Result>, isInterp) =
+            if isInterp then 
+                PrintfBuilder<'State, 'Residue, 'Result>().Build<'T>(key.Value, true)
             else
-                let v = get(key.Value, key.Types)
-                Cache<'T, 'State, 'Residue, 'Result>.last <- (key.Value, v)
-                v
+                let cacheEntry = Cache<'T, 'State, 'Residue, 'Result>.last
+                if not (cacheEntry === null) && key.Value.Equals (fst cacheEntry) then snd cacheEntry
+                else
+                    let v = get key.Value
+                    Cache<'T, 'State, 'Residue, 'Result>.last <- (key.Value, v)
+                    v
 
-    type StringPrintfEnv<'Result>(k, n, caps) = 
-        inherit PrintfEnv<unit, string, 'Result>((), caps)
+    type StringPrintfEnv<'Result>(k, n) = 
+        inherit PrintfEnv<unit, string, 'Result>(())
 
         let buf: string[] = Array.zeroCreate n
         let mutable ptr = 0
@@ -2252,8 +1578,8 @@ module internal PrintfImpl =
             buf.[ptr] <- s
             ptr <- ptr + 1
 
-    type SmallStringPrintfEnv<'Result>(k, caps) = 
-        inherit PrintfEnv<unit, string, 'Result>((), caps)
+    type SmallStringPrintfEnv<'Result>(k) = 
+        inherit PrintfEnv<unit, string, 'Result>(())
         
         let mutable c = null
 
@@ -2261,20 +1587,20 @@ module internal PrintfImpl =
         override __.Write(s: string) = if isNull c then c <- s else c <- c + s
         override __.WriteT s = if isNull c then c <- s else c <- c + s
 
-    type StringBuilderPrintfEnv<'Result>(k, buf, caps) = 
-        inherit PrintfEnv<Text.StringBuilder, unit, 'Result>(buf, caps)
+    type StringBuilderPrintfEnv<'Result>(k, buf) = 
+        inherit PrintfEnv<Text.StringBuilder, unit, 'Result>(buf)
         override __.Finish() : 'Result = k ()
         override __.Write(s: string) = ignore(buf.Append s)
         override __.WriteT(()) = ()
 
-    type TextWriterPrintfEnv<'Result>(k, tw: IO.TextWriter, caps) =
-        inherit PrintfEnv<IO.TextWriter, unit, 'Result>(tw, caps)
+    type TextWriterPrintfEnv<'Result>(k, tw: IO.TextWriter) =
+        inherit PrintfEnv<IO.TextWriter, unit, 'Result>(tw)
         override __.Finish() : 'Result = k()
         override __.Write(s: string) = tw.Write s
         override __.WriteT(()) = ()
     
-    let inline doPrintf fmt f = 
-        let formatter, n = Cache<_, _, _, _>.Get fmt
+    let inline doPrintf fmt isInterp f = 
+        let formatter, n = Cache<_, _, _, _>.Get (fmt, isInterp)
         let env() = f n
         formatter env
 
@@ -2295,35 +1621,40 @@ module Printf =
 
     [<CompiledName("PrintFormatToStringThen")>]
     let ksprintf continuation (format: StringFormat<'T, 'Result>) : 'T = 
-        doPrintf format (fun n ->
+        doPrintf format false (fun n ->
             if n <= 2 then
-                SmallStringPrintfEnv(continuation, format.Captures) :> PrintfEnv<_, _, _>
+                SmallStringPrintfEnv continuation :> PrintfEnv<_, _, _>
             else
-                StringPrintfEnv(continuation, n, format.Captures) :> PrintfEnv<_, _, _>
+                StringPrintfEnv(continuation, n) :> PrintfEnv<_, _, _>
+        )
+
+    let sprintfAux isInterp (format: StringFormat<'T>) =
+        doPrintf format isInterp (fun n ->
+            if n <= 2 then
+                SmallStringPrintfEnv id :> PrintfEnv<_, _, _>
+            else
+                StringPrintfEnv(id, n) :> PrintfEnv<_, _, _>
         )
 
     [<CompiledName("PrintFormatToStringThen")>]
-    let sprintf (format: StringFormat<'T>) =
-        doPrintf format (fun n ->
-            if n <= 2 then
-                SmallStringPrintfEnv(id, format.Captures) :> PrintfEnv<_, _, _>
-            else
-                StringPrintfEnv(id, n, format.Captures) :> PrintfEnv<_, _, _>
-        )
+    let sprintf (format: StringFormat<'T>) = sprintfAux false format
+
+    [<CompiledName("InterpolatedPrintFormatToStringThen")>]
+    let isprintf (format: StringFormat<'T>) = sprintfAux true format
 
     [<CompiledName("PrintFormatThen")>]
     let kprintf continuation format = ksprintf continuation format
 
     [<CompiledName("PrintFormatToStringBuilderThen")>]
     let kbprintf continuation (builder: StringBuilder) format = 
-        doPrintf format (fun _ -> 
-            StringBuilderPrintfEnv(continuation, builder, format.Captures) :> PrintfEnv<_, _, _> 
+        doPrintf format false (fun _ -> 
+            StringBuilderPrintfEnv(continuation, builder) :> PrintfEnv<_, _, _> 
         )
     
     [<CompiledName("PrintFormatToTextWriterThen")>]
     let kfprintf continuation textWriter format =
-        doPrintf format (fun _ -> 
-            TextWriterPrintfEnv(continuation, textWriter, format.Captures) :> PrintfEnv<_, _, _>
+        doPrintf format false (fun _ -> 
+            TextWriterPrintfEnv(continuation, textWriter) :> PrintfEnv<_, _, _>
         )
 
     [<CompiledName("PrintFormatToStringBuilder")>]
