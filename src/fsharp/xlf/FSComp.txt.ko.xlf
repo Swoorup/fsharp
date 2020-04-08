@@ -132,6 +132,11 @@
         <target state="translated">언어 버전 5.0이 필요한 끝 조각화에서는 /langversion:preview를 사용하세요.</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">스트림은 null 리소스로 시작되지 않으며 '.RES' 형식이 아닙니다.</target>

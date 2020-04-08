@@ -132,6 +132,11 @@
         <target state="translated">需要语言版本 5.0 才能从末尾切片，请使用 /langversion:preview。</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">流应以空资源开头并且应采用 .RES 格式。</target>

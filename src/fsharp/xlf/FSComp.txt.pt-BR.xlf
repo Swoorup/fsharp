@@ -132,6 +132,11 @@
         <target state="translated">A opção 'Divisão começando no final com' requer a versão de idioma 5.0. Use /langversion:preview.</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">Stream não começa com um recurso nulo e não está no formato '.RES'.</target>

@@ -132,6 +132,11 @@
         <target state="translated">L'extraction à partir de la fin nécessite la version 5.0 du langage. Utilisez /langversion:preview.</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">Le flux ne commence pas par une ressource null et n'est pas au format '.RES'.</target>

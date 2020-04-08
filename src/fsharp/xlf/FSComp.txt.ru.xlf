@@ -132,6 +132,11 @@
         <target state="translated">Для конечного среза, для которого требуется версия языка 5.0, используйте параметр /langversion:preview.</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">Поток не начинается с нулевого ресурса и не соответствует формату ".RES".</target>

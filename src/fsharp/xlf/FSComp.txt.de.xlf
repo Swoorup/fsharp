@@ -132,6 +132,11 @@
         <target state="translated">Für das vom Ende ausgehende Slicing ist Sprachversion 5.0 erforderlich. Verwenden Sie /langversion:preview.</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">Der Stream beginnt nicht mit einer NULL-Ressource und ist nicht im RES-Format.</target>

@@ -132,6 +132,11 @@
         <target state="translated">Dil sürümü 5.0 gerektiren bitiş diliminden /langversion:preview kullanın.</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">Akış null kaynakla başlamıyor ve '.RES' biçiminde değil.</target>

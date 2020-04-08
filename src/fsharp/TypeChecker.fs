@@ -5900,6 +5900,10 @@ and TcExprUndelayed cenv overallTy env tpenv (synExpr: SynExpr) =
         CallExprHasTypeSink cenv.tcSink (m, env.NameEnv, overallTy, env.AccessRights)
         TcConstStringExpr cenv overallTy env m tpenv s
 
+    | SynExpr.InterpolatedString (_parts, m) -> 
+        CallExprHasTypeSink cenv.tcSink (m, env.NameEnv, overallTy, env.AccessRights)
+        failwith "nyi" //TcConstStringExpr cenv overallTy env m tpenv s
+
     | SynExpr.Const (synConst, m) -> 
         CallExprHasTypeSink cenv.tcSink (m, env.NameEnv, overallTy, env.AccessRights)
         TcConstExpr cenv overallTy env m tpenv synConst
@@ -9694,6 +9698,7 @@ and TcItemThen cenv overallTy env tpenv (item, mItem, rest, afterResolution) del
             | SynExpr.AddressOf (_, synExpr, _, _) 
             | SynExpr.Quote (_, _, synExpr, _, _) -> isSimpleArgument synExpr
 
+            | SynExpr.InterpolatedString _
             | SynExpr.Null _
             | SynExpr.Ident _ 
             | SynExpr.Const _ 

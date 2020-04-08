@@ -132,6 +132,11 @@
         <target state="translated">言語バージョン 5.0 が必要な最後のスライスから、/langversion:preview を使用してください。</target>
         <note />
       </trans-unit>
+      <trans-unit id="lexByteStringMayNotBeInterpolated">
+        <source>a byte string may not be interpolated</source>
+        <target state="new">a byte string may not be interpolated</target>
+        <note />
+      </trans-unit>
       <trans-unit id="nativeResourceFormatError">
         <source>Stream does not begin with a null resource and is not in '.RES' format.</source>
         <target state="translated">ストリームは null リソースでは始まらず、'RES' 形式でもありません。</target>
